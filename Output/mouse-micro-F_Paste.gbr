@@ -1,0 +1,21 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,9.0.1*%
+%TF.CreationDate,2026-01-07T21:00:53-05:00*%
+%TF.ProjectId,mouse-micro,6d6f7573-652d-46d6-9963-726f2e6b6963,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Paste,Top*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 9.0.1) date 2026-01-07 21:00:53*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+%ADD10R,2.006600X1.803400*%
+G04 APERTURE END LIST*
+D10*
+%TO.C,J1*%
+X126460001Y-65459999D03*
+X126460001Y-56460001D03*
+%TD*%
+M02*
