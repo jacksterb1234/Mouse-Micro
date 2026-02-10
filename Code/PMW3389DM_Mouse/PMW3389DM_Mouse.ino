@@ -1,19 +1,20 @@
-/* Created by Ben Makes Everything for this project: [https://youtu.be/qmX8vL-GbxU](https://youtu.be/qmX8vL-GbxU)
-    This code was based on the following:
-    [https://github.com/dkao/Kensington_Expert_Mouse_PMW3389_Arduino](https://github.com/dkao/Kensington_Expert_Mouse_PMW3389_Arduino)
-    Which was derived from this:
-    [https://github.com/mrjohnk/PMW3389DM](https://github.com/mrjohnk/PMW3389DM)
-    This is intended to be used with an Arduino Pro Micro
-    The Button function/key mapping and DPI presets can be defined to your liking
-    LED code removed for devices without LEDs
+/*
+  PMW3389DM-Mouse.ino
+  Based on BenMakesEverything PMW3389_Mouse project.
+  Updated mapping:
+    Btn1 (5) = Left
+    Btn2 (4) = Right
+    Btn3 (6) = Middle
+    Btn4 (7) = DPI cycle
+    Btn5 (8) = Back
+    Btn6 (9) = Forward
+  No LEDs, no keyboard buttons.
 */
+
 #include <SPI.h>
 #include <RotaryEncoder.h>
 
-
-//Sets mouse to use advance mode, nescessary for back/middle mouse buttons to work
 #define ADVANCE_MODE
-
 
 #ifdef ADVANCE_MODE
 #include <AdvMouse.h>
@@ -27,39 +28,35 @@
 #define MOUSE_RELEASE(x)  Mouse.release(x)
 #endif
 
-
 #if defined(AVR)
 #include <avr/pgmspace.h>
-#else  //defined(AVR)
+#else
 #include <pgmspace.h>
-#endif  //defined(AVR)
+#endif
 
+// ==== Configuration ====
+#define CPI      1000
+#define DEBOUNCE 5
+#define NUMCPI   7
 
-// Configurations
-// The default CPI value should be in between 100 -- 12000
-#define CPI      1000 //Default setting when mouse is first plugged in, can be whatever
-#define DEBOUNCE 5 //unit = ms
-#define NUMCPI   7 //Number of DPI presets
+#define NUMBTN  6   // Left, Right, Middle, Back, Forward, (we treat DPI separately)
 
-
-#define NUMBTN  5 //number of mouse buttons
-#define NUMKEYS 0 //no keyboard buttons
-
-
-#define Btn1_Pin 5   // left button
-#define Btn2_Pin 4   // right button
-#define Btn3_Pin 6   // Middle mouse
+// Your pin mapping:
+#define Btn1_Pin 5   // Left
+#define Btn2_Pin 4   // Right
+#define Btn3_Pin 6   // Middle
 #define Btn4_Pin 7   // DPI button
-#define Btn5_Pin 8   // back button
-#define Btn6_Pin 9   // forward button
+#define Btn5_Pin 8   // Back
+#define Btn6_Pin 9   // Forward
 
-
-//encoder pins
+// Encoder pins
 #define PIN_IN1 A3
 #define PIN_IN2 A2
 
+// PMW3389 pins (per your schematic: SS on B6 -> D10, RST tied to board reset)
+const int ncs   = 10;  // SS on B6 -> D10
 
-//Registers
+// ==== PMW3389 Registers (unchanged) ====
 #define Product_ID         0x00
 #define Revision_ID        0x01
 #define Motion             0x02
@@ -114,186 +111,85 @@
 #define PWM_Period_Cnt     0x73
 #define PWM_Width_Cnt      0x74
 
-
+// ==== Globals ====
 RotaryEncoder *encoder = nullptr;
 
+// Mouse buttons: Left, Right, Middle, Back, Forward
+int     Btn_pins[NUMBTN]    = {Btn1_Pin, Btn2_Pin, Btn3_Pin, Btn5_Pin, Btn6_Pin};
+bool    Btns[NUMBTN]        = {false, false, false, false, false, false};
+uint8_t Btn_buffers[NUMBTN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+char    Btn_keys[NUMBTN]    = {MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, MOUSE_BACK, MOUSE_FORWARD, 0};
 
-const int ncs = 4;   //PMW3389 "SS" pin
-const int reset = 3; //PMW3389 "MT" pin
-
-
-// Button arrays
-int Btn_pins[NUMBTN] = {Btn1_Pin, Btn2_Pin, Btn3_Pin, Btn5_Pin, Btn6_Pin};
-bool Btns[NUMBTN] = {false, false, false, false, false};
-uint8_t Btn_buffers[NUMBTN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-char Btn_keys[NUMBTN] = {MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, MOUSE_BACK, MOUSE_FORWARD};
-
-
-// DPI button separate handling
-bool DpiBtn = false;
+// DPI button separate handling (Btn4)
+bool    DpiBtn        = false;
 uint8_t DpiBtn_buffer = 0xFF;
 
-
-unsigned long Cpis[NUMCPI] = { 400, 600, 800, 1000, 1200, 1400, 1600 };
+unsigned long Cpis[NUMCPI] = {400, 600, 800, 1000, 1200, 1400, 1600};
 struct CpiUpdater {
-  bool target_set;
-  bool updated;
+  bool    target_set;
+  bool    updated;
   uint8_t target_cpi_index;
 };
+CpiUpdater CpiUpdate = {false, false, 3};
 
-
-CpiUpdater CpiUpdate = {false, false, 3}; // Default Dpi = Cpis[3] = 1000
-
-
-byte initComplete = 0;
-bool inBurst = false;   // in busrt mode
-bool reportSQ = false;  // report surface quality
-int16_t dx, dy;
-
-
+byte         initComplete = 0;
+bool         inBurst      = false;
+bool         reportSQ     = false;
+int16_t      dx, dy;
 unsigned long lastTS;
 unsigned long lastButtonCheck = 0;
 unsigned long curTime;
 
-
-//Be sure to add the SROM file into this sketch via "Sketch->Add File"
+// SROM firmware
 extern const unsigned short firmware_length;
-extern const unsigned char firmware_data[];
+extern const unsigned char  firmware_data[];
 
-
-void setup() {
-  pinMode(ncs, OUTPUT);
-  pinMode(reset, INPUT_PULLUP);
-  pinMode(Btn1_Pin, INPUT_PULLUP);
-  pinMode(Btn2_Pin, INPUT_PULLUP);
-  pinMode(Btn3_Pin, INPUT_PULLUP);
-  pinMode(Btn4_Pin, INPUT_PULLUP);
-  pinMode(Btn5_Pin, INPUT_PULLUP);
-  pinMode(Btn6_Pin, INPUT_PULLUP);
-
-
-  attachInterrupt(digitalPinToInterrupt(PIN_IN1), checkPosition, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_IN2), checkPosition, RISING);
-
-
-  SPI.begin();
-  SPI.setDataMode(SPI_MODE3);
-  SPI.setBitOrder(MSBFIRST);
-
-
-  encoder = new RotaryEncoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
-
-
-  performStartup();
-
-
-  dx = dy = 0;
-
-
-  delay(1000);
-  initComplete = 9;
-
-
-  lastTS = micros();
-
-
-  MOUSE_BEGIN;
-}
-
-
-void adns_com_begin() {
-  digitalWrite(ncs, LOW);
-}
-
-
-void adns_com_end() {
-  digitalWrite(ncs, HIGH);
-}
-
+// ==== SPI helpers ====
+void adns_com_begin() { digitalWrite(ncs, LOW); }
+void adns_com_end()   { digitalWrite(ncs, HIGH); }
 
 byte adns_read_reg(byte reg_addr) {
   adns_com_begin();
-
-
-  // send adress of the register, with MSBit = 0 to indicate it's a read
-  SPI.transfer(reg_addr & 0x7f );
-  delayMicroseconds(35); // tSRAD
-  // read data
-  byte data = SPI.transfer(0);
-
-
-  delayMicroseconds(1);  //tSCLK-NCS for read operation is 120ns
+  SPI.transfer(reg_addr & 0x7F);
+  delayMicroseconds(35);
+  byte data = SPI.transfer(0x00);
+  delayMicroseconds(1);
   adns_com_end();
-  delayMicroseconds(19); //tSRW/tSRR (=20us) minus tSCLK-NCS
-
-
+  delayMicroseconds(19);
   return data;
 }
 
-
 void adns_write_reg(byte reg_addr, byte data) {
   adns_com_begin();
-
-
-  //send adress of the register, with MSBit = 1 to indicate it's a write
-  SPI.transfer(reg_addr | 0x80 );
-  //sent data
+  SPI.transfer(reg_addr | 0x80);
   SPI.transfer(data);
-
-
-  delayMicroseconds(20); //tSCLK-NCS for write operation
+  delayMicroseconds(20);
   adns_com_end();
-  delayMicroseconds(100); //tSWW/tSWR (=120us) minus tSCLK-NCS. Could be shortened, but is looks like a safe lower bound
+  delayMicroseconds(100);
 }
 
-
 void adns_upload_firmware() {
-  // send the firmware to the chip, cf p.18 of the datasheet
-  //Write 0 to Rest_En bit of Config2 register to disable Rest mode.
   adns_write_reg(Config2, 0x00);
-
-
-  // write 0x1d in SROM_enable reg for initializing
-  adns_write_reg(SROM_Enable, 0x1d);
-
-
-  // wait for more than one frame period
-  delay(10); // assume that the frame rate is as low as 100fps... even if it should never be that low
-
-
-  // write 0x18 to SROM_enable to start SROM download
+  adns_write_reg(SROM_Enable, 0x1D);
+  delay(10);
   adns_write_reg(SROM_Enable, 0x18);
 
-
-  // write the SROM file (=firmware data)
   adns_com_begin();
-  SPI.transfer(SROM_Load_Burst | 0x80); // write burst destination adress
+  SPI.transfer(SROM_Load_Burst | 0x80);
   delayMicroseconds(15);
 
-
-  // send all bytes of the firmware
-  unsigned char c;
   for (int i = 0; i < firmware_length; i++) {
-    c = (unsigned char)pgm_read_byte(firmware_data + i);
+    unsigned char c = (unsigned char)pgm_read_byte(firmware_data + i);
     SPI.transfer(c);
     delayMicroseconds(15);
   }
-
-
-  //Read the SROM_ID register to verify the ID before any other register reads or writes.
-  adns_read_reg(SROM_ID);
-
-
-  //Write 0x00 (rest disable) to Config2 register for wired mouse or 0x20 for wireless mouse design.
-  adns_write_reg(Config2, 0x00);
-
-
   adns_com_end();
+
+  adns_read_reg(SROM_ID);
+  adns_write_reg(Config2, 0x00);
 }
 
-
-void setCPI(int cpi)
-{
+void setCPI(int cpi) {
   unsigned cpival = cpi / 50;
   adns_com_begin();
   adns_write_reg(Resolution_L, (cpival & 0xFF));
@@ -301,232 +197,178 @@ void setCPI(int cpi)
   adns_com_end();
 }
 
-
 void performStartup(void) {
-  // hard reset
-  adns_com_end(); // ensure that the serial port is reset
-  adns_com_begin(); // ensure that the serial port is reset
-  adns_com_end(); // ensure that the serial port is reset
+  adns_com_end();
+  adns_com_begin();
+  adns_com_end();
 
-
-  adns_write_reg(Shutdown, 0xb6); // Shutdown first
+  adns_write_reg(Shutdown, 0xB6);
   delay(300);
 
-
-  adns_com_begin(); // drop and raise ncs to reset spi port
+  adns_com_begin();
   delayMicroseconds(40);
   adns_com_end();
   delayMicroseconds(40);
 
+  adns_write_reg(Power_Up_Reset, 0x5A);
+  delay(50);
 
-  adns_write_reg(Power_Up_Reset, 0x5a); // force reset
-  delay(50); // wait for it to reboot
-
-
-  // read registers 0x02 to 0x06 (and discard the data)
   adns_read_reg(Motion);
   adns_read_reg(Delta_X_L);
   adns_read_reg(Delta_X_H);
   adns_read_reg(Delta_Y_L);
   adns_read_reg(Delta_Y_H);
-  // upload the firmware
+
   adns_upload_firmware();
   delay(10);
-
 
   setCPI(Cpis[CpiUpdate.target_cpi_index]);
 }
 
+// ==== Setup ====
+void setup() {
+  pinMode(ncs, OUTPUT);
 
-// Button state checkup routine
-void check_button_state()
-{
-  // runs only after initialization
-  if (initComplete != 9)
-    return;
+  pinMode(Btn1_Pin, INPUT_PULLUP);
+  pinMode(Btn2_Pin, INPUT_PULLUP);
+  pinMode(Btn3_Pin, INPUT_PULLUP);
+  pinMode(Btn4_Pin, INPUT_PULLUP);
+  pinMode(Btn5_Pin, INPUT_PULLUP);
+  pinMode(Btn6_Pin, INPUT_PULLUP);
 
+  attachInterrupt(digitalPinToInterrupt(PIN_IN1), [](){ encoder->tick(); }, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_IN2), [](){ encoder->tick(); }, RISING);
+
+  SPI.begin();
+  SPI.setDataMode(SPI_MODE3);
+  SPI.setBitOrder(MSBFIRST);
+
+  encoder = new RotaryEncoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
+
+  performStartup();
+
+  dx = dy = 0;
+  delay(1000);
+  initComplete = 9;
+  lastTS = micros();
+
+  MOUSE_BEGIN;
+}
+
+// ==== Button state check ====
+void check_button_state() {
+  if (initComplete != 9) return;
 
   unsigned long elapsed = curTime - lastButtonCheck;
-
-
-  // Update at a period of 1/8 of the DEBOUNCE time
-  if (elapsed < (DEBOUNCE * 1000UL / 8))
-    return;
-
+  if (elapsed < (DEBOUNCE * 1000UL / 8)) return;
 
   lastButtonCheck = curTime;
-  
-  // Debounce mouse buttons
-  for (int i = 0; i < NUMBTN ; i++)
-  {
+
+  // Mouse buttons (L, R, Middle, Back, Forward)
+  for (int i = 0; i < NUMBTN; i++) {
     int btn_state = digitalRead(Btn_pins[i]);
-    Btn_buffers[i] = Btn_buffers[i] << 1 | btn_state;
+    Btn_buffers[i] = (Btn_buffers[i] << 1) | btn_state;
 
-
-    if (!Btns[i] && Btn_buffers[i] == 0x00) // button press stabilized
-    {
-      MOUSE_PRESS(Btn_keys[i]);
+    if (!Btns[i] && Btn_buffers[i] == 0x00) {
+      if (Btn_keys[i] != 0) {
+        MOUSE_PRESS(Btn_keys[i]);
+      }
       Btns[i] = true;
-    }
-    else if (Btns[i] && Btn_buffers[i] == 0xFF) // button release stabilized
-    {
-      MOUSE_RELEASE(Btn_keys[i]);
+    } else if (Btns[i] && Btn_buffers[i] == 0xFF) {
+      if (Btn_keys[i] != 0) {
+        MOUSE_RELEASE(Btn_keys[i]);
+      }
       Btns[i] = false;
     }
   }
 
-
-  // Debounce DPI button (Btn4)
+  // DPI button (Btn4 on its own)
   int dpi_btn_state = digitalRead(Btn4_Pin);
-  DpiBtn_buffer = DpiBtn_buffer << 1 | dpi_btn_state;
+  DpiBtn_buffer = (DpiBtn_buffer << 1) | dpi_btn_state;
 
-
-  if (!DpiBtn && DpiBtn_buffer == 0x00) // DPI button press stabilized
-  {
+  if (!DpiBtn && DpiBtn_buffer == 0x00) {
     DpiBtn = true;
-    // Cycle to next CPI setting
     CpiUpdate.target_cpi_index = (CpiUpdate.target_cpi_index + 1) % NUMCPI;
     CpiUpdate.updated = false;
-  }
-  else if (DpiBtn && DpiBtn_buffer == 0xFF) // DPI button release stabilized
-  {
+  } else if (DpiBtn && DpiBtn_buffer == 0xFF) {
     DpiBtn = false;
   }
 }
 
-
-// device signature
-void dispRegisters(void) {
-  int oreg[7] = {
-    0x00, 0x3F, 0x2A, 0x02
-  };
-  char* oregname[] = {
-    "Product_ID", "Inverse_Product_ID", "SROM_Version", "Motion"
-  };
-  byte regres;
-
-
-  digitalWrite(ncs, LOW);
-
-
-  int rctr = 0;
-  for (rctr = 0; rctr < 4; rctr++) {
-    SPI.transfer(oreg[rctr]);
-    delay(1);
-    regres = SPI.transfer(0);
-    delay(1);
-  }
-  digitalWrite(ncs, HIGH);
-}
-
-
+// ==== Main loop ====
 void loop() {
-  byte burstBuffer[12];
+  static byte burstBuffer[12];
   curTime = micros();
   unsigned long elapsed = curTime - lastTS;
 
-
+  // Encoder scroll
   static int pos = 0;
-  encoder->tick(); // just call tick() to check the state.
-
-
+  encoder->tick();
   int newPos = encoder->getPosition();
   if (pos != newPos) {
     int dir = (int)encoder->getDirection();
-    AdvMouse.move(0, 0, dir);
+    AdvMouse.move(0, 0, dir); // scroll only
     pos = newPos;
   }
 
-
   check_button_state();
 
-
-  if (!inBurst)
-  {
-    adns_write_reg(Motion_Burst, 0x00); // start burst mode
+  if (!inBurst) {
+    adns_write_reg(Motion_Burst, 0x00);
     lastTS = curTime;
     inBurst = true;
   }
 
-
-  if (elapsed >= 1000) // polling interval : more than > 0.5 ms.
-  {
+  if (elapsed >= 1000) {
     adns_com_begin();
     SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE3));
 
-
     SPI.transfer(Motion_Burst);
-    delayMicroseconds(35); // waits for tSRAD
+    delayMicroseconds(35);
 
+    for (int i = 0; i < 12; i++) {
+      burstBuffer[i] = SPI.transfer(0x00);
+    }
 
-    SPI.transfer(burstBuffer, 12); // read burst buffer
-    delayMicroseconds(1); // tSCLK-NCS for read operation is 120ns
-
-
+    delayMicroseconds(1);
     SPI.endTransaction();
-
+    adns_com_end();
 
     int motion = (burstBuffer[0] & 0x80) > 0;
-    int surface = (burstBuffer[0] & 0x08) > 0;   // 0 if on surface / 1 if off surface
 
+    int8_t xl = (int8_t)burstBuffer[2];
+    int8_t xh = (int8_t)burstBuffer[3];
+    int8_t yl = (int8_t)burstBuffer[4];
+    int8_t yh = (int8_t)burstBuffer[5];
 
-    int xl = burstBuffer[2];
-    int xh = burstBuffer[3];
-    int yl = burstBuffer[4];
-    int yh = burstBuffer[5];
-
-
-    int squal = burstBuffer[6];
-
-
-    int x = xh << 8 | xl;
-    int y = yh << 8 | yl;
-
+    int16_t x = (int16_t)(((int16_t)xh << 8) | (uint8_t)xl);
+    int16_t y = (int16_t)(((int16_t)yh << 8) | (uint8_t)yl);
 
     dx = x;
     dy = y;
 
-
-    adns_com_end();
-
-
-    // update only if a movement is detected.
 #ifdef ADVANCE_MODE
-    if (AdvMouse.needSendReport() || motion)
-    {
-      AdvMouse.move(-dx, -dy, 0); //these are negative because the sensor is rotated 180 degrees from default orientation
-
-
+    if (AdvMouse.needSendReport() || motion) {
+      AdvMouse.move(-dx, -dy, 0); // flip both axes; adjust if directions feel wrong
       dx = 0;
       dy = 0;
     }
 #else
-    if (motion)
-    {
+    if (motion) {
       signed char mdx = constrain(dx, -127, 127);
       signed char mdy = constrain(dy, -127, 127);
-
-
       Mouse.move(-mdx, -mdy, 0);
-
-
       dx = 0;
       dy = 0;
     }
 #endif
+
     lastTS = curTime;
   }
 
-
-  // update CPI when changed by DPI button
+  // Apply CPI change when DPI button cycled
   if (CpiUpdate.updated == false) {
     setCPI(Cpis[CpiUpdate.target_cpi_index]);
     CpiUpdate.updated = true;
   }
-}
-
-
-void checkPosition()
-{
-  encoder->tick();
 }
